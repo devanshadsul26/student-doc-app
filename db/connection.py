@@ -1,5 +1,6 @@
 import os
 import psycopg2
+from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,4 +13,5 @@ def get_conn():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASS"),
         sslmode=os.getenv("DB_SSLMODE"),
+        cursor_factory=RealDictCursor,
     )
