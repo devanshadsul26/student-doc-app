@@ -4,8 +4,8 @@ import os
 import plotly.graph_objects as go
 
 from services.document_service import upload_document_both
-from db.queries import search_documents
-from storage.gcs import download_file_timed
+from db.queries import search_documents, delete_document_by_filename, delete_blob_by_filename
+from storage.gcs import download_file_timed, delete_file
 from utils.cost_calculator import estimate_cost
 from services.benchmark_service import run_benchmark, results_to_excel, BENCHMARK_SIZES
 
@@ -411,6 +411,55 @@ code, pre {
     border-radius: 20px;
     margin-left: 0.4rem;
 }
+/* ── Dropdown / selectbox popover (renders in a portal outside main DOM) ── */
+div[data-baseweb="popover"],
+div[data-baseweb="popover"] > div,
+div[data-baseweb="popover"] ul,
+div[data-baseweb="popover"] li,
+[data-baseweb="menu"],
+[data-baseweb="menu"] ul,
+[data-baseweb="menu"] li,
+ul[role="listbox"],
+ul[role="listbox"] li {
+    background-color: #fff !important;
+    color: #111111 !important;
+    border-color: #D9CFC7 !important;
+}
+
+/* Popover wrapper card */
+div[data-baseweb="popover"] > div {
+    border: 1px solid #D9CFC7 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08) !important;
+}
+
+/* Each option row */
+[role="option"],
+li[role="option"] {
+    background-color: #fff !important;
+    color: #111111 !important;
+}
+[role="option"]:hover,
+li[role="option"]:hover {
+    background-color: #EFE9E3 !important;
+    color: #111111 !important;
+}
+
+/* Highlighted / selected option */
+[aria-selected="true"],
+[data-highlighted="true"] {
+    background-color: #D9CFC7 !important;
+    color: #111111 !important;
+}
+
+/* Any stray dark backgrounds from BaseWeb theme */
+[data-baseweb] {
+    color: #111111 !important;
+}
+[data-baseweb="select"] * {
+    color: #111111 !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -557,52 +606,97 @@ if submitted:
             doc_type=s_doc_type,
             filename_query=s_filename or None,
         )
+        # Store results in session_state so they survive reruns (e.g. after delete)
+        st.session_state["search_results"] = results
+        st.session_state["search_params"] = {
+            "student_id": s_student_id,
+            "doc_type": s_doc_type,
+            "filename": s_filename,
+        }
+    except Exception as e:
+        st.error(f"Search error: {e}")
 
-        if results:
-            st.success(f"Found {len(results)} document(s) matching your filters.")
+# ── Render results from session_state (persists after delete reruns) ─────────
+if "search_results" in st.session_state:
+    results = st.session_state["search_results"]
+    params  = st.session_state.get("search_params", {})
 
-            df_search = pd.DataFrame(results)
-            df_search.columns = [
-                "Row Key", "Student ID", "Student Name", "Doc Type",
-                "Filename", "GCS Path", "Size (KB)", "Uploaded At"
-            ]
-            st.dataframe(df_search.drop(columns=["Row Key", "GCS Path"]), use_container_width=True)
+    if results:
+        st.success(f"Found {len(results)} document(s) matching your filters.")
 
-            st.markdown("**Download from GCS**")
-            for doc in results:
+        df_search = pd.DataFrame(results)
+        df_search.columns = [
+            "Row Key", "Student ID", "Student Name", "Doc Type",
+            "Filename", "GCS Path", "Size (KB)", "Uploaded At"
+        ]
+        st.dataframe(df_search.drop(columns=["Row Key", "GCS Path"]), use_container_width=True)
+
+        st.markdown("**Actions per document**")
+
+        for doc in results:
+            col_info, col_dl, col_del = st.columns([4, 2, 1])
+
+            with col_info:
+                st.markdown(
+                    f"**{doc['filename']}** &nbsp;·&nbsp; "
+                    f"{doc['student_id']} &nbsp;·&nbsp; "
+                    f"{doc['doc_type']} &nbsp;·&nbsp; "
+                    f"{doc['size_kb']} KB",
+                    unsafe_allow_html=True
+                )
+
+            with col_dl:
                 try:
                     data, elapsed = download_file_timed(doc["gcs_object_name"])
                     st.download_button(
-                        label=f"{doc['filename']} — {doc['student_id']} ({elapsed} ms)",
+                        label=f"Download ({elapsed} ms)",
                         data=data,
                         file_name=doc["filename"],
-                        key=f"search_dl_{doc['row_key']}"
+                        key=f"dl_{doc['row_key']}"
                     )
                 except Exception:
-                    st.warning(f"Could not fetch {doc['filename']} from GCS.")
+                    st.warning("GCS unavailable")
 
-            with st.expander("View SQL query used"):
-                conditions_display = []
-                if s_student_id:
-                    conditions_display.append(f"d.student_id = '{s_student_id}'")
-                if s_doc_type != "All":
-                    conditions_display.append(f"d.doc_type = '{s_doc_type}'")
-                if s_filename:
-                    conditions_display.append(f"d.filename ILIKE '%{s_filename}%'")
-                where = ("WHERE " + " AND ".join(conditions_display)) if conditions_display else "(no filters — all records)"
-                st.code(f"""
+            with col_del:
+                if st.button("Delete", key=f"del_{doc['row_key']}",
+                             help=f"Permanently delete {doc['filename']} from Cloud SQL and GCS",
+                             type="secondary"):
+                    try:
+                        delete_document_by_filename(doc["student_id"], doc["filename"])
+                        delete_blob_by_filename(doc["student_id"], doc["filename"])
+                        delete_file(doc["gcs_object_name"])
+                        # Remove from session_state immediately so rerun shows updated list
+                        st.session_state["search_results"] = [
+                            r for r in st.session_state["search_results"]
+                            if r["row_key"] != doc["row_key"]
+                        ]
+                        st.success(f"'{doc['filename']}' deleted from Cloud SQL and GCS.")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Delete failed: {ex}")
+
+            st.divider()
+
+        with st.expander("View SQL query used"):
+            conditions_display = []
+            if params.get("student_id"):
+                conditions_display.append(f"d.student_id = '{params['student_id']}'")
+            if params.get("doc_type") and params["doc_type"] != "All":
+                conditions_display.append(f"d.doc_type = '{params['doc_type']}'")
+            if params.get("filename"):
+                conditions_display.append(f"d.filename ILIKE '%{params['filename']}%'")
+            where = ("WHERE " + " AND ".join(conditions_display)) if conditions_display else "(no filters — all records)"
+            st.code(f"""
 SELECT d.student_id, s.name, d.doc_type, d.filename,
        d.file_size_bytes / 1024.0 AS size_kb, d.uploaded_at
 FROM documents d
 JOIN students s ON d.student_id = s.student_id
 {where}
 ORDER BY d.uploaded_at DESC;
-                """, language="sql")
-        else:
-            st.warning("No documents found matching your filters.")
+            """, language="sql")
+    else:
+        st.warning("No documents found matching your filters.")
 
-    except Exception as e:
-        st.error(f"Search error: {e}")
 
 st.divider()
 
