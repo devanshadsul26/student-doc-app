@@ -33,17 +33,6 @@ def download_file_timed(path):
     return data, t.elapsed_ms
 
 
-def generate_signed_url(path, expiry_minutes=15):
-    """Generate a signed URL for a GCS object, valid for expiry_minutes."""
-    blob = bucket.blob(path)
-    url = blob.generate_signed_url(
-        expiration=datetime.timedelta(minutes=expiry_minutes),
-        method="GET",
-        version="v4",
-    )
-    return url
-
-
 def delete_file(path):
     """Delete an object from the GCS bucket."""
     blob = bucket.blob(path)

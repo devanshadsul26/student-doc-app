@@ -98,42 +98,6 @@ def fetch_blob_timed(student_id, filename):
     return None, t.elapsed_ms
 
 
-def fetch_documents(student_id):
-    conn = get_conn()
-
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM documents WHERE student_id=%s", (student_id,))
-    gcs_docs = cur.fetchall()
-
-    cur.execute("SELECT * FROM documents_blob WHERE student_id=%s", (student_id,))
-    blob_docs = cur.fetchall()
-
-    cur.close()
-    conn.close()
-
-    return gcs_docs, blob_docs
-
-
-def delete_document(doc_id):
-    """Delete a GCS metadata record from the documents table by id."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM documents WHERE id=%s", (doc_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def delete_blob(doc_id):
-    """Delete a SQL blob record from the documents_blob table by id."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM documents_blob WHERE id=%s", (doc_id,))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
 def delete_document_by_filename(student_id, filename):
     """Delete a GCS metadata record by student_id + filename."""
     conn = get_conn()
@@ -158,81 +122,6 @@ def delete_blob_by_filename(student_id, filename):
     conn.commit()
     cur.close()
     conn.close()
-
-
-# ── ANALYTICS QUERIES ──────────────────────────────────────────────────────
-
-def get_docs_per_student():
-    """Return count of GCS documents grouped by student."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.student_id, s.name, COUNT(d.filename) AS doc_count
-        FROM students s
-        LEFT JOIN documents d ON s.student_id = d.student_id
-        GROUP BY s.student_id, s.name
-        ORDER BY doc_count DESC
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-def get_avg_size_per_doc_type():
-    """Return average file size per document type."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT doc_type,
-               COUNT(*) AS total_files,
-               ROUND(AVG(file_size_bytes) / 1024.0, 2) AS avg_size_kb,
-               ROUND(SUM(file_size_bytes) / 1024.0, 2) AS total_size_kb
-        FROM documents
-        GROUP BY doc_type
-        ORDER BY total_files DESC
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-def get_upload_trend():
-    """Return daily upload counts over time."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT DATE(uploaded_at) AS upload_date, COUNT(*) AS uploads
-        FROM documents
-        GROUP BY DATE(uploaded_at)
-        ORDER BY upload_date ASC
-    """)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-
-def get_top_uploaders(limit=5):
-    """Return top N students by total file size uploaded."""
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT s.student_id, s.name,
-               COUNT(d.filename) AS doc_count,
-               ROUND(SUM(d.file_size_bytes) / 1024.0, 2) AS total_size_kb
-        FROM students s
-        JOIN documents d ON s.student_id = d.student_id
-        GROUP BY s.student_id, s.name
-        ORDER BY total_size_kb DESC
-        LIMIT %s
-    """, (limit,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
 
 # ── SEARCH & FILTER QUERIES ────────────────────────────────────────────────
 
@@ -286,4 +175,3 @@ def search_documents(student_id=None, doc_type=None, filename_query=None,
     cur.close()
     conn.close()
     return rows
-
